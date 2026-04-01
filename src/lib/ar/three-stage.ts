@@ -80,6 +80,16 @@ export class ThreeStageController {
   private latestHit: XRHitTestResult | null = null;
   private hitTestRequested = false;
   private anchor: AnchorHandle | null = null;
+  private readonly scratchMatrix = new Matrix4();
+  private readonly scratchPosition = new Vector3();
+  private readonly scratchQuaternion = new Quaternion();
+  private readonly scratchScale = new Vector3();
+  private readonly stablePosition = new Vector3();
+  private readonly stableQuaternion = new Quaternion();
+  private readonly horizontalForward = new Vector3(0, 0, -1);
+  private readonly worldUp = new Vector3(0, 1, 0);
+  private readonly alignedQuaternion = new Quaternion();
+  private hasStablePose = false;
 
   constructor(
     private readonly container: HTMLElement,
@@ -211,6 +221,9 @@ export class ThreeStageController {
       this.controls.enabled = false;
       this.hitTestRequested = false;
       this.latestHit = null;
+      this.hasStablePose = false;
+      this.anchor?.delete?.();
+      this.anchor = null;
 
       session.addEventListener("end", this.handleSessionEnd);
       this.callbacks.onError?.(null);
@@ -426,12 +439,7 @@ export class ThreeStageController {
       return;
     }
 
-    const matrix = new Matrix4().copy(this.reticle.matrix);
-    const position = new Vector3();
-    const quaternion = new Quaternion();
-    const scale = new Vector3();
-
-    matrix.decompose(position, quaternion, scale);
+    this.scratchMatrix.copy(this.reticle.matrix);
 
     if (!this.activePlacedObject) {
       this.activePlacedObject = cloneSkeleton(this.activePrototype);
@@ -441,8 +449,7 @@ export class ThreeStageController {
     }
 
     this.xrPlacementGroup.visible = true;
-    this.xrPlacementGroup.position.copy(position);
-    this.xrPlacementGroup.quaternion.copy(quaternion);
+    this.applyStabilizedPlacement(this.scratchMatrix, true);
     this.xrPlacementGroup.scale.setScalar(this.currentDish.visual.arScale);
 
     const hitWithAnchor = this.latestHit as XRHitTestResultWithAnchor | null;
@@ -540,14 +547,46 @@ export class ThreeStageController {
       return;
     }
 
-    const matrix = new Matrix4().fromArray(pose.transform.matrix);
-    const position = new Vector3();
-    const quaternion = new Quaternion();
-    const scale = new Vector3();
+    this.scratchMatrix.fromArray(pose.transform.matrix);
+    this.applyStabilizedPlacement(this.scratchMatrix);
+  }
 
-    matrix.decompose(position, quaternion, scale);
-    this.xrPlacementGroup.position.copy(position);
-    this.xrPlacementGroup.quaternion.copy(quaternion);
+  private applyStabilizedPlacement(matrix: Matrix4, snapToSurface = false) {
+    matrix.decompose(this.scratchPosition, this.scratchQuaternion, this.scratchScale);
+
+    this.horizontalForward.set(0, 0, -1).applyQuaternion(this.scratchQuaternion);
+    this.horizontalForward.y = 0;
+
+    if (this.horizontalForward.lengthSq() > 0.000001) {
+      this.horizontalForward.normalize();
+      const yaw = Math.atan2(this.horizontalForward.x, this.horizontalForward.z);
+      this.alignedQuaternion.setFromAxisAngle(this.worldUp, yaw);
+    } else if (!this.hasStablePose) {
+      this.alignedQuaternion.identity();
+    } else {
+      this.alignedQuaternion.copy(this.stableQuaternion);
+    }
+
+    if (!this.hasStablePose || snapToSurface) {
+      this.stablePosition.copy(this.scratchPosition);
+      this.stableQuaternion.copy(this.alignedQuaternion);
+      this.hasStablePose = true;
+    } else {
+      const positionDelta = this.stablePosition.distanceTo(this.scratchPosition);
+      const angleDelta = this.stableQuaternion.angleTo(this.alignedQuaternion);
+
+      // Ignore tiny pose noise and softly ease larger corrections.
+      if (positionDelta >= 0.0016 || angleDelta >= MathUtils.degToRad(0.3)) {
+        const positionAlpha = Math.min(0.4, 0.12 + positionDelta * 4.8);
+        const rotationAlpha = Math.min(0.34, 0.08 + angleDelta * 1.3);
+
+        this.stablePosition.lerp(this.scratchPosition, positionAlpha);
+        this.stableQuaternion.slerp(this.alignedQuaternion, rotationAlpha);
+      }
+    }
+
+    this.xrPlacementGroup.position.copy(this.stablePosition);
+    this.xrPlacementGroup.quaternion.copy(this.stableQuaternion);
   }
 
   private handleSessionEnd = () => {
@@ -559,6 +598,7 @@ export class ThreeStageController {
     this.hitTestRequested = false;
     this.anchor?.delete?.();
     this.anchor = null;
+    this.hasStablePose = false;
     this.reticle.visible = false;
     this.previewRig.visible = true;
     this.xrPlacementGroup.visible = false;
