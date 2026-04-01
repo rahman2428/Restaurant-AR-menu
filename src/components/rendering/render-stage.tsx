@@ -41,6 +41,10 @@ export const RenderStage = forwardRef<RenderStageHandle, RenderStageProps>(funct
       return;
     }
 
+    stageContainerRef.current.querySelectorAll("canvas.stage-canvas").forEach((canvas) => {
+      canvas.remove();
+    });
+
     const controller = new ThreeStageController(
       stageContainerRef.current,
       {

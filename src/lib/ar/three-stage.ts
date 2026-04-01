@@ -80,6 +80,8 @@ export class ThreeStageController {
   private latestHit: XRHitTestResult | null = null;
   private hitTestRequested = false;
   private anchor: AnchorHandle | null = null;
+  private hasPlacedDish = false;
+  private anchorRequestVersion = 0;
   private readonly scratchMatrix = new Matrix4();
   private readonly scratchPosition = new Vector3();
   private readonly scratchQuaternion = new Quaternion();
@@ -119,6 +121,7 @@ export class ThreeStageController {
     this.camera.position.set(0, 1.28, 4.1);
     this.scene.environment = this.environmentTarget.texture;
 
+    this.removeStaleStageCanvases();
     this.container.appendChild(this.renderer.domElement);
 
     this.pedestal = this.createPedestal();
@@ -136,6 +139,7 @@ export class ThreeStageController {
     this.xrPlacementGroup.visible = false;
     this.scene.add(this.previewRig, this.xrPlacementGroup, this.reticle, this.controller);
     this.previewRig.add(this.pedestal, this.aura, this.previewDishMount);
+    this.applyPreviewRigModeVisibility(false);
 
     this.setupLights();
 
@@ -189,7 +193,9 @@ export class ThreeStageController {
     }
 
     this.activePrototype = prototype;
-    this.mountPreviewClone();
+    if (!this.xrSession) {
+      this.mountPreviewClone();
+    }
 
     if (this.activePlacedObject) {
       this.replacePlacedClone();
@@ -216,11 +222,21 @@ export class ThreeStageController {
       this.renderer.xr.setReferenceSpaceType("local");
       await this.renderer.xr.setSession(session);
 
+      this.removeForeignStageCanvases();
+      if (this.previewRig.parent === this.scene) {
+        this.scene.remove(this.previewRig);
+      }
       this.previewRig.visible = false;
+      this.applyPreviewRigModeVisibility(true);
+      this.xrPlacementGroup.visible = false;
+      this.xrPlacementGroup.clear();
+      this.activePlacedObject = null;
       this.reticle.visible = false;
       this.controls.enabled = false;
       this.hitTestRequested = false;
       this.latestHit = null;
+      this.hasPlacedDish = false;
+      this.anchorRequestVersion += 1;
       this.hasStablePose = false;
       this.anchor?.delete?.();
       this.anchor = null;
@@ -243,6 +259,7 @@ export class ThreeStageController {
     this.controls.dispose();
     this.resizeObserver.disconnect();
     this.hitTestSource?.cancel();
+    this.anchorRequestVersion += 1;
     this.anchor?.delete?.();
     this.environmentTarget.dispose();
     this.pmremGenerator.dispose();
@@ -268,6 +285,38 @@ export class ThreeStageController {
     pedestal.position.y = 0.02;
     pedestal.receiveShadow = true;
     return pedestal;
+  }
+
+  private removeStaleStageCanvases() {
+    this.container.querySelectorAll("canvas.stage-canvas").forEach((canvas) => {
+      canvas.remove();
+    });
+  }
+
+  private removeForeignStageCanvases() {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    document.querySelectorAll("canvas.stage-canvas").forEach((canvas) => {
+      if (canvas !== this.renderer.domElement) {
+        canvas.remove();
+      }
+    });
+  }
+
+  private applyPreviewRigModeVisibility(immersiveArActive: boolean) {
+    if (immersiveArActive) {
+      this.previewDishMount.visible = false;
+      this.pedestal.visible = false;
+      this.aura.visible = false;
+      return;
+    }
+
+    this.previewDishMount.visible = true;
+    const showStageChrome = this.capabilities.presentationMode !== "camera";
+    this.pedestal.visible = showStageChrome;
+    this.aura.visible = showStageChrome;
   }
 
   private createAura() {
@@ -426,39 +475,46 @@ export class ThreeStageController {
       return;
     }
 
-    if (this.activePlacedObject) {
-      this.xrPlacementGroup.remove(this.activePlacedObject);
-    }
-
+    this.xrPlacementGroup.clear();
     this.activePlacedObject = cloneSkeleton(this.activePrototype);
     this.xrPlacementGroup.add(this.activePlacedObject);
+    this.enforceSinglePlacedInstance();
   }
 
   private async placeCurrentDish() {
-    if (!this.currentDish || !this.activePrototype || !this.reticle.visible) {
+    if (!this.currentDish || !this.activePrototype || !this.reticle.visible || this.hasPlacedDish) {
       return;
     }
 
     this.scratchMatrix.copy(this.reticle.matrix);
 
-    if (!this.activePlacedObject) {
-      this.activePlacedObject = cloneSkeleton(this.activePrototype);
-      this.xrPlacementGroup.add(this.activePlacedObject);
-    } else {
-      this.replacePlacedClone();
-    }
+    this.replacePlacedClone();
 
     this.xrPlacementGroup.visible = true;
     this.applyStabilizedPlacement(this.scratchMatrix, true);
     this.xrPlacementGroup.scale.setScalar(this.currentDish.visual.arScale);
+    this.hasPlacedDish = true;
+    this.reticle.visible = false;
+    this.enforceSinglePlacedInstance();
 
     const hitWithAnchor = this.latestHit as XRHitTestResultWithAnchor | null;
     if (hitWithAnchor?.createAnchor) {
+      const requestVersion = ++this.anchorRequestVersion;
       try {
         this.anchor?.delete?.();
-        this.anchor = await hitWithAnchor.createAnchor();
-      } catch {
         this.anchor = null;
+
+        const nextAnchor = await hitWithAnchor.createAnchor();
+        if (requestVersion !== this.anchorRequestVersion || !this.xrSession) {
+          nextAnchor?.delete?.();
+          return;
+        }
+
+        this.anchor = nextAnchor ?? null;
+      } catch {
+        if (requestVersion === this.anchorRequestVersion) {
+          this.anchor = null;
+        }
       }
     }
   }
@@ -467,6 +523,11 @@ export class ThreeStageController {
     const seconds = time * 0.001;
 
     if (this.xrSession && frame) {
+      if (this.previewRig.parent === this.scene) {
+        this.scene.remove(this.previewRig);
+      }
+      this.applyPreviewRigModeVisibility(true);
+      this.enforceSinglePlacedInstance();
       this.updateHitTest(frame);
       this.updateAnchor(frame);
     } else {
@@ -511,6 +572,11 @@ export class ThreeStageController {
     }
 
     if (!this.hitTestSource) {
+      return;
+    }
+
+    if (this.hasPlacedDish) {
+      this.reticle.visible = false;
       return;
     }
 
@@ -589,6 +655,17 @@ export class ThreeStageController {
     this.xrPlacementGroup.quaternion.copy(this.stableQuaternion);
   }
 
+  private enforceSinglePlacedInstance() {
+    if (this.xrPlacementGroup.children.length <= 1) {
+      return;
+    }
+
+    const survivor = this.xrPlacementGroup.children[this.xrPlacementGroup.children.length - 1];
+    this.xrPlacementGroup.clear();
+    this.xrPlacementGroup.add(survivor);
+    this.activePlacedObject = survivor;
+  }
+
   private handleSessionEnd = () => {
     this.xrSession?.removeEventListener("end", this.handleSessionEnd);
     this.xrSession = null;
@@ -596,12 +673,22 @@ export class ThreeStageController {
     this.hitTestSource = null;
     this.latestHit = null;
     this.hitTestRequested = false;
+    this.anchorRequestVersion += 1;
     this.anchor?.delete?.();
     this.anchor = null;
+    this.hasPlacedDish = false;
     this.hasStablePose = false;
     this.reticle.visible = false;
+    if (this.previewRig.parent !== this.scene) {
+      this.scene.add(this.previewRig);
+    }
+    this.applyPreviewRigModeVisibility(false);
     this.previewRig.visible = true;
     this.xrPlacementGroup.visible = false;
+    this.xrPlacementGroup.clear();
+    this.activePlacedObject = null;
+    this.renderer.xr.enabled = false;
+    this.mountPreviewClone();
     this.controls.enabled = true;
     this.callbacks.onSessionStateChange?.(false);
   };

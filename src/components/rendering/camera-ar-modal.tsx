@@ -62,6 +62,10 @@ export function CameraArModal({
       return;
     }
 
+    stageRef.current.querySelectorAll("canvas.stage-canvas").forEach((canvas) => {
+      canvas.remove();
+    });
+
     const controller = new ThreeStageController(
       stageRef.current,
       {
