@@ -10,7 +10,6 @@ import { useArCapabilities } from "@/hooks/use-ar-capabilities";
 import { CameraArModal } from "@/components/rendering/camera-ar-modal";
 import { RenderStage, type RenderStageHandle } from "@/components/rendering/render-stage";
 import { CategoryTabs } from "./category-tabs";
-import { DishDetailsPanel } from "./dish-details-panel";
 
 interface MenuExperienceProps {
   menu: RestaurantMenu;
@@ -21,6 +20,10 @@ function buildInitialIndexes(menu: RestaurantMenu) {
     indexes[category.id] = 0;
     return indexes;
   }, {} as Record<MenuCategory, number>);
+}
+
+function deriveHalfPlatePrice(fullPlatePriceInr: number) {
+  return Math.max(120, Math.round((fullPlatePriceInr * 0.62) / 10) * 10);
 }
 
 export function MenuExperience({ menu }: MenuExperienceProps) {
@@ -35,10 +38,21 @@ export function MenuExperience({ menu }: MenuExperienceProps) {
 
   const categoryMeta =
     menu.categories.find((category) => category.id === selectedCategory) ?? menu.categories[0];
-  const filteredDishes = menu.dishes.filter((dish) => dish.category === selectedCategory);
+  const selectedCategoryDishes =
+    selectedCategory === "all"
+      ? menu.dishes
+      : menu.dishes.filter((dish) => dish.category === selectedCategory);
+  const filteredDishes = selectedCategoryDishes.length > 0 ? selectedCategoryDishes : menu.dishes;
   const rawIndex = indexByCategory[selectedCategory] ?? 0;
   const currentIndex = rawIndex % filteredDishes.length;
   const currentDish = filteredDishes[currentIndex];
+  const fullPlatePrice = currentDish.priceInr;
+  const halfPlatePrice = deriveHalfPlatePrice(currentDish.priceInr);
+  const selectedCategoryIndex = menu.categories.findIndex((entry) => entry.id === selectedCategory);
+  const activeCategoryIndex = selectedCategoryIndex < 0 ? 0 : selectedCategoryIndex;
+  const categoryPositionLabel = `${String(activeCategoryIndex + 1).padStart(2, "0")} / ${String(
+    menu.categories.length
+  ).padStart(2, "0")}`;
   const preloadDishes = getAdjacentDishes(filteredDishes, currentIndex);
   const engine = resolveRenderEngine(capabilities, currentDish);
   const assetSelection = resolveDishAssets(currentDish, filteredDishes, currentIndex, capabilities);
@@ -58,10 +72,9 @@ export function MenuExperience({ menu }: MenuExperienceProps) {
             assetSelection.quickLookReady
         );
   const canOpenArView = hasNativeAr || hasCameraFallback;
-  const categorySections = menu.categories.map((category) => ({
-    category,
-    dishes: menu.dishes.filter((dish) => dish.category === category.id)
-  }));
+  const dishNameParts = currentDish.name.split(" ");
+  const dishLeadWord = dishNameParts[0] ?? currentDish.name;
+  const dishTrailingWords = dishNameParts.slice(1).join(" ");
 
   function cycleDish(direction: 1 | -1) {
     setIndexByCategory((current) => ({
@@ -75,12 +88,10 @@ export function MenuExperience({ menu }: MenuExperienceProps) {
     setSelectedCategory(category);
   }
 
-  function selectCategoryDish(category: MenuCategory, dishIndex: number) {
-    setSelectedCategory(category);
-    setIndexByCategory((current) => ({
-      ...current,
-      [category]: dishIndex
-    }));
+  function cycleCategory(direction: 1 | -1) {
+    const nextCategoryIndex =
+      (activeCategoryIndex + direction + menu.categories.length) % menu.categories.length;
+    setSelectedCategory(menu.categories[nextCategoryIndex].id);
   }
 
   async function launchPrimaryExperience() {
@@ -122,153 +133,135 @@ export function MenuExperience({ menu }: MenuExperienceProps) {
     : "Checking device";
   const arButtonLabel =
     launchState === "launching"
-      ? "Opening AR..."
+      ? "Preparing AR..."
       : canOpenArView
-        ? "Open AR View"
-        : "AR unavailable";
+        ? "AR On Mobile"
+        : "3D Preview Active";
 
   return (
-    <main className="app-shell">
-      <div className="page-glow page-glow--left" />
-      <div className="page-glow page-glow--right" />
+    <main className="experience-shell">
+      <div className="experience-aura experience-aura--left" />
+      <div className="experience-aura experience-aura--right" />
 
-      <header className="topbar glass-panel">
-        <div className="topbar__brand">
-          <span className="eyebrow">Professional AR Menu</span>
-          <strong>{menu.brand}</strong>
+      <header className="experience-header">
+        <div className="brand-block">
+          <strong>{menu.brand.toUpperCase()}</strong>
+          <span>Immersive dining preview</span>
         </div>
 
-        <div className="topbar__actions">
-          <div className="topbar__meta">
-            <span className="capability-pill">{capabilityCopy}</span>
-            <span className="capability-pill capability-pill--warm">{engine.badge}</span>
-          </div>
-
-          <button
-            className="primary-button topbar__ar-button"
-            disabled={!canOpenArView || launchState === "launching"}
-            onClick={() => {
-              void launchPrimaryExperience();
-            }}
-            type="button"
-          >
-            {arButtonLabel}
-          </button>
-        </div>
-      </header>
-
-      <section className="hero-grid hero-grid--professional">
-        <div className="glass-panel info-panel">
-          <div className="panel-header panel-header--row">
-            <div>
-              <span className="eyebrow">{categoryMeta.eyebrow}</span>
-              <h2>{currentDish.name}</h2>
-            </div>
-            <span className="dish-index">{dishCountLabel}</span>
-          </div>
-
-          <p className="panel-copy">{currentDish.tagline}</p>
-
-          <div className="meta-row">
-            <span className="stat-chip">{formatPrice(currentDish.priceInr)}</span>
-            <span className="stat-chip">{currentDish.calories} kcal</span>
-            <span className="stat-chip">{categoryMeta.label}</span>
-          </div>
-
+        <div className="experience-header__center">
           <CategoryTabs
             categories={menu.categories}
             selectedCategory={selectedCategory}
             onSelectCategory={selectCategory}
           />
-
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={currentDish.id}
-              className="dish-hero"
-              initial={{ opacity: 0, y: 18 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -12 }}
-              transition={{ duration: 0.28, ease: "easeOut" }}
-            >
-              <div className="dish-kicker-row">
-                <span className="dish-tag">{engine.headline}</span>
-                <span className="dish-index">{menu.brand}</span>
-              </div>
-
-              <p className="dish-description">{currentDish.description}</p>
-            </motion.div>
-          </AnimatePresence>
         </div>
 
-        <div className="stage-column">
-          <RenderStage
-            ref={stageRef}
-            capabilities={capabilities}
-            dish={currentDish}
-            engine={engine}
-            onNext={() => cycleDish(1)}
-            onPrevious={() => cycleDish(-1)}
-            preloadDishes={preloadDishes}
-          />
-        </div>
+        <span className="interactive-pill">3D Interactive</span>
+      </header>
 
-        <div className="details-column">
-          <AnimatePresence mode="wait">
-            <DishDetailsPanel dish={currentDish} key={currentDish.id} />
-          </AnimatePresence>
-        </div>
+      <section className="experience-stage">
+        <RenderStage
+          ref={stageRef}
+          capabilities={capabilities}
+          currentIndex={currentIndex}
+          dish={currentDish}
+          engine={engine}
+          onNext={() => cycleDish(1)}
+          onPrevious={() => cycleDish(-1)}
+          preloadDishes={preloadDishes}
+          totalCount={filteredDishes.length}
+        />
       </section>
 
-      <section className="category-section-grid" aria-label="All menu categories">
-        {categorySections.map(({ category, dishes }) => {
-          const isActive = selectedCategory === category.id;
+      <section className="dish-summary">
+        <AnimatePresence mode="wait">
+          <motion.article
+            key={currentDish.id}
+            className="dish-summary__card"
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+          >
+            <span className="dish-summary__index">{dishCountLabel}</span>
 
-          return (
-            <article
-              className={`glass-panel category-section-card${isActive ? " is-active" : ""}`}
-              key={category.id}
-            >
-              <button
-                className="category-section-card__top"
-                aria-pressed={isActive}
-                onClick={() => selectCategory(category.id)}
-                type="button"
-              >
-                <div>
-                  <span className="eyebrow">{category.eyebrow}</span>
-                  <h3>{category.label}</h3>
-                </div>
-                <span className="category-section-card__count">
-                  {String(dishes.length).padStart(2, "0")} dishes
-                </span>
-              </button>
+            <h1 className="dish-summary__title">
+              <span>{dishLeadWord}</span>
+              {dishTrailingWords ? <em>{` ${dishTrailingWords}`}</em> : null}
+            </h1>
 
-              <p className="category-section-card__description">{category.description}</p>
+            <p className="dish-summary__subtitle">{currentDish.tagline}</p>
+            <p className="dish-summary__description">{currentDish.description}</p>
 
-              <div className="category-section-card__list">
-                {dishes.map((dish, dishIndex) => {
-                  const isDishActive = isActive && currentDish.id === dish.id;
-
-                  return (
-                    <button
-                      className={`category-section-card__dish${isDishActive ? " is-active" : ""}`}
-                      aria-pressed={isDishActive}
-                      key={dish.id}
-                      onClick={() => selectCategoryDish(category.id, dishIndex)}
-                      type="button"
-                    >
-                      <span className="category-section-card__dish-name">{dish.name}</span>
-                      <span className="category-section-card__dish-meta">
-                        {formatPrice(dish.priceInr)} / {dish.calories} kcal
-                      </span>
-                    </button>
-                  );
-                })}
+            <div className="dish-summary__metrics">
+              <div>
+                <span>Price</span>
+                <strong>{formatPrice(currentDish.priceInr)}</strong>
               </div>
-            </article>
-          );
-        })}
+              <div>
+                <span>Calories</span>
+                <strong>{currentDish.calories} kcal</strong>
+              </div>
+              <div>
+                <span>Type</span>
+                <strong>{categoryMeta.label}</strong>
+              </div>
+            </div>
+
+            <div className="dish-summary__plate-pricing">
+              <span className="dish-summary__plate-pricing-label">Plate Pricing</span>
+              <div className="dish-summary__plate-pricing-values">
+                <p>
+                  Full Plate <strong>{formatPrice(fullPlatePrice)}</strong>
+                </p>
+                <p>
+                  Half Plate <strong>{formatPrice(halfPlatePrice)}</strong>
+                </p>
+              </div>
+            </div>
+
+            <p className="dish-summary__ingredients">{currentDish.ingredients.join(" | ")}</p>
+            <p className="dish-summary__status">
+              {capabilityCopy} | {engine.headline}
+            </p>
+          </motion.article>
+        </AnimatePresence>
       </section>
+
+      <footer className="experience-footer">
+        <button
+          className="experience-footer__launch"
+          disabled={!canOpenArView || launchState === "launching"}
+          onClick={() => {
+            void launchPrimaryExperience();
+          }}
+          type="button"
+        >
+          {arButtonLabel}
+        </button>
+
+        <div className="experience-footer__quick-controls">
+          <button
+            aria-label="Previous category"
+            className="experience-footer__round-button"
+            onClick={() => cycleCategory(-1)}
+            type="button"
+          >
+            {"<"}
+          </button>
+          <button
+            aria-label="Next category"
+            className="experience-footer__round-button"
+            onClick={() => cycleCategory(1)}
+            type="button"
+          >
+            {">"}
+          </button>
+        </div>
+
+        <span className="experience-footer__collection">{categoryPositionLabel} Collections</span>
+      </footer>
 
       <CameraArModal
         capabilities={capabilities}

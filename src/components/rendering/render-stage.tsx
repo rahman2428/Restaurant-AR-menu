@@ -22,12 +22,14 @@ interface RenderStageProps {
   preloadDishes: MenuDish[];
   engine: RenderEngineDescriptor;
   capabilities: DeviceCapabilities;
+  currentIndex: number;
+  totalCount: number;
   onPrevious: () => void;
   onNext: () => void;
 }
 
 export const RenderStage = forwardRef<RenderStageHandle, RenderStageProps>(function RenderStage(
-  { dish, preloadDishes, engine, capabilities, onPrevious, onNext },
+  { dish, preloadDishes, engine, capabilities, currentIndex, totalCount, onPrevious, onNext },
   ref
 ) {
   const stageContainerRef = useRef<HTMLDivElement | null>(null);
@@ -116,46 +118,57 @@ export const RenderStage = forwardRef<RenderStageHandle, RenderStageProps>(funct
     : capabilities.hasTouch
       ? "Swipe to browse, drag to rotate, and use Open AR View for the live camera experience."
       : "Drag to orbit, scroll to zoom, and use Open AR View to launch the live AR experience.";
+  const dotCount = Math.min(totalCount, 8);
+  const normalizedDotIndex =
+    totalCount <= 1
+      ? 0
+      : Math.round((currentIndex / (totalCount - 1)) * (dotCount - 1));
 
   return (
     <div
       aria-label={`${dish.name} interactive preview`}
       className="glass-panel stage-shell"
+      onTouchEnd={handleTouchEnd}
+      onTouchStart={handleTouchStart}
       role="region"
     >
       <div ref={stageContainerRef} className="stage-shell__canvas-wrap" />
 
       <div className="stage-overlay">
         <div className="stage-status">
-          <span className="capability-pill capability-pill--warm">{engine.badge}</span>
+          <span className="stage-engine-pill">{engine.badge}</span>
           <p>{helperCopy}</p>
         </div>
 
-        <button
-          aria-label="Previous dish"
-          className="stage-nav stage-nav--left"
-          onClick={onPrevious}
-          type="button"
-        >
-          <span aria-hidden="true">{"<"}</span>
-        </button>
+        <div className="stage-controls">
+          <div aria-hidden="true" className="stage-controls__arc" />
 
-        <button
-          aria-label="Next dish"
-          className="stage-nav stage-nav--right"
-          onClick={onNext}
-          type="button"
-        >
-          <span aria-hidden="true">{">"}</span>
-        </button>
+          <button
+            aria-label="Previous dish"
+            className="stage-nav stage-nav--left"
+            onClick={onPrevious}
+            type="button"
+          >
+            <span aria-hidden="true">{"<"}</span>
+          </button>
 
-        <div
-          className="swipe-rail"
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-          role="presentation"
-        >
-          Swipe here to browse the menu
+          <div className="stage-dots" role="presentation">
+            {Array.from({ length: dotCount }, (_, dotIndex) => (
+              <span
+                className={`stage-dot${normalizedDotIndex === dotIndex ? " is-active" : ""}`}
+                key={dotIndex}
+              />
+            ))}
+          </div>
+
+          <button
+            aria-label="Next dish"
+            className="stage-nav stage-nav--right"
+            onClick={onNext}
+            type="button"
+          >
+            <span aria-hidden="true">{">"}</span>
+          </button>
         </div>
 
         {stageError ? <div className="stage-toast">{stageError}</div> : null}

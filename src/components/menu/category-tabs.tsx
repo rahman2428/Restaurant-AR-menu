@@ -13,6 +13,14 @@ export function CategoryTabs({
   selectedCategory,
   onSelectCategory
 }: CategoryTabsProps) {
+  const categoryToken: Record<MenuCategory, string> = {
+    all: "AL",
+    veg: "VG",
+    "non-veg": "NV",
+    "veg-non-veg": "MX",
+    dessert: "DS"
+  };
+
   return (
     <div className="category-tabs" aria-label="Menu categories" role="tablist">
       {categories.map((category) => {
@@ -27,7 +35,7 @@ export function CategoryTabs({
             role="tab"
             type="button"
           >
-            <span className="category-tab__eyebrow">{category.eyebrow}</span>
+            <span className="category-tab__icon">{categoryToken[category.id]}</span>
             <span className="category-tab__label">{category.label}</span>
           </button>
         );

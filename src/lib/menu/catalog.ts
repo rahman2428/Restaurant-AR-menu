@@ -7,6 +7,12 @@ export const restaurantMenu: RestaurantMenu = {
     "Swipe through signature dishes, inspect every finish in 3D, and place the plate in your space with the best engine your device can support.",
   categories: [
     {
+      id: "all",
+      label: "All",
+      eyebrow: "Signature Selection",
+      description: "Every dish in one collection for quick browsing."
+    },
+    {
       id: "veg",
       label: "Veg",
       eyebrow: "Botanical",
@@ -258,4 +264,3 @@ export const restaurantMenu: RestaurantMenu = {
     }
   ]
 };
-

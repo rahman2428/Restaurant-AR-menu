@@ -1,4 +1,4 @@
-export type MenuCategory = "veg" | "non-veg" | "veg-non-veg" | "dessert";
+export type MenuCategory = "all" | "veg" | "non-veg" | "veg-non-veg" | "dessert";
 
 export type FallbackDishKind =
   | "salad"
@@ -52,4 +52,3 @@ export interface RestaurantMenu {
   categories: MenuCategoryDefinition[];
   dishes: MenuDish[];
 }
-
