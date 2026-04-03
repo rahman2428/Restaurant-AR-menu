@@ -7,7 +7,7 @@ export function openQuickLook(assetUrl: string, title: string) {
   const image = document.createElement("img");
 
   link.rel = "ar";
-  link.href = `${assetUrl}#allowsContentScaling=0`;
+  link.href = `${assetUrl}#allowsContentScaling=1`;
   link.appendChild(image);
   image.alt = `${title} AR preview`;
 
@@ -15,4 +15,3 @@ export function openQuickLook(assetUrl: string, title: string) {
   link.click();
   document.body.removeChild(link);
 }
-

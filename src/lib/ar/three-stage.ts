@@ -95,6 +95,14 @@ export class ThreeStageController {
   private readonly worldUp = new Vector3(0, 1, 0);
   private readonly alignedQuaternion = new Quaternion();
   private hasStablePose = false;
+  private pinchStartDistance = 0;
+  private pinchStartScale = 1;
+  private pinchActive = false;
+  private rotateActive = false;
+  private rotateStartX = 0;
+  private userYawOffset = 0;
+  private readonly userYawQuaternion = new Quaternion();
+  private readonly composedQuaternion = new Quaternion();
 
   constructor(
     private readonly container: HTMLElement,
@@ -170,6 +178,14 @@ export class ThreeStageController {
     this.resizeObserver.observe(this.container);
 
     this.resize();
+    this.renderer.domElement.addEventListener("touchstart", this.handlePinchStart, {
+      passive: false
+    });
+    this.renderer.domElement.addEventListener("touchmove", this.handlePinchMove, {
+      passive: false
+    });
+    this.renderer.domElement.addEventListener("touchend", this.handlePinchEnd);
+    this.renderer.domElement.addEventListener("touchcancel", this.handlePinchEnd);
     this.renderer.setAnimationLoop((time, frame) => {
       this.renderFrame(time, frame);
     });
@@ -193,6 +209,7 @@ export class ThreeStageController {
     this.currentDish = dish;
     this.callbacks.onError?.(null);
     this.applyAccent(dish);
+    this.userYawOffset = 0;
 
     const requestId = this.loadVersion + 1;
     this.loadVersion = requestId;
@@ -205,11 +222,16 @@ export class ThreeStageController {
 
     this.activePrototype = prototype;
     if (!this.xrSession) {
+      this.previewDishMount.scale.setScalar(1);
       this.mountPreviewClone();
     }
 
     if (this.activePlacedObject) {
+      this.xrPlacementGroup.scale.setScalar(dish.visual.arScale);
       this.replacePlacedClone();
+      if (this.hasStablePose) {
+        this.applyPlacementOrientation(this.stableQuaternion);
+      }
     }
   }
 
@@ -258,6 +280,9 @@ export class ThreeStageController {
       this.hasPlacedDish = false;
       this.anchorRequestVersion += 1;
       this.hasStablePose = false;
+      this.pinchActive = false;
+      this.rotateActive = false;
+      this.userYawOffset = 0;
       this.anchor?.delete?.();
       this.anchor = null;
 
@@ -281,6 +306,10 @@ export class ThreeStageController {
     this.hitTestSource?.cancel();
     this.anchorRequestVersion += 1;
     this.anchor?.delete?.();
+    this.renderer.domElement.removeEventListener("touchstart", this.handlePinchStart);
+    this.renderer.domElement.removeEventListener("touchmove", this.handlePinchMove);
+    this.renderer.domElement.removeEventListener("touchend", this.handlePinchEnd);
+    this.renderer.domElement.removeEventListener("touchcancel", this.handlePinchEnd);
     this.environmentTarget.dispose();
     this.pmremGenerator.dispose();
     this.renderer.dispose();
@@ -399,6 +428,7 @@ export class ThreeStageController {
     this.controls.maxDistance = 4.4;
     this.controls.minPolarAngle = 0.7;
     this.controls.maxPolarAngle = 1.62;
+    this.controls.enableZoom = false;
     this.controls.target.set(0, 0.42, 0);
     this.controls.update();
   }
@@ -555,6 +585,7 @@ export class ThreeStageController {
     this.replacePlacedClone();
 
     this.xrPlacementGroup.visible = true;
+    this.userYawOffset = 0;
     this.applyStabilizedPlacement(this.scratchMatrix, true);
     this.xrPlacementGroup.scale.setScalar(this.currentDish.visual.arScale);
     this.hasPlacedDish = true;
@@ -716,7 +747,7 @@ export class ThreeStageController {
     }
 
     this.xrPlacementGroup.position.copy(this.stablePosition);
-    this.xrPlacementGroup.quaternion.copy(this.stableQuaternion);
+    this.applyPlacementOrientation(this.stableQuaternion);
   }
 
   private enforceSinglePlacedInstance() {
@@ -730,6 +761,169 @@ export class ThreeStageController {
     this.activePlacedObject = survivor;
   }
 
+  private canRotatePlacedModel() {
+    return Boolean(this.xrSession && this.hasPlacedDish && this.hasStablePose);
+  }
+
+  private applyPlacementOrientation(baseQuaternion: Quaternion) {
+    this.userYawQuaternion.setFromAxisAngle(this.worldUp, this.userYawOffset);
+    this.composedQuaternion.copy(baseQuaternion).multiply(this.userYawQuaternion);
+    this.xrPlacementGroup.quaternion.copy(this.composedQuaternion);
+  }
+
+  private applyRotationFromDrag(deltaX: number) {
+    if (!this.canRotatePlacedModel()) {
+      return;
+    }
+
+    const sensitivity = 0.01;
+    this.userYawOffset = MathUtils.euclideanModulo(
+      this.userYawOffset + deltaX * sensitivity,
+      Math.PI * 2
+    );
+    this.applyPlacementOrientation(this.stableQuaternion);
+  }
+
+  private getTouchDistance(touches: TouchList) {
+    const first = touches[0];
+    const second = touches[1];
+
+    if (!first || !second) {
+      return 0;
+    }
+
+    const deltaX = first.clientX - second.clientX;
+    const deltaY = first.clientY - second.clientY;
+    return Math.hypot(deltaX, deltaY);
+  }
+
+  private resolvePinchTarget() {
+    if (this.xrSession && this.hasPlacedDish && this.currentDish) {
+      return {
+        group: this.xrPlacementGroup,
+        minScale: this.currentDish.visual.arScale * 0.45,
+        maxScale: this.currentDish.visual.arScale * 3.2
+      };
+    }
+
+    if (this.capabilities.presentationMode === "camera") {
+      return {
+        group: this.previewDishMount,
+        minScale: 0.55,
+        maxScale: 2.4
+      };
+    }
+
+    return null;
+  }
+
+  private handlePinchStart = (event: TouchEvent) => {
+    if (event.touches.length === 1) {
+      this.pinchActive = false;
+      if (this.canRotatePlacedModel()) {
+        event.preventDefault();
+        this.rotateActive = true;
+        this.rotateStartX = event.touches[0].clientX;
+      } else {
+        this.rotateActive = false;
+      }
+      return;
+    }
+
+    if (event.touches.length < 2) {
+      this.pinchActive = false;
+      this.rotateActive = false;
+      return;
+    }
+
+    this.rotateActive = false;
+    const target = this.resolvePinchTarget();
+
+    if (!target) {
+      this.pinchActive = false;
+      return;
+    }
+
+    const distance = this.getTouchDistance(event.touches);
+
+    if (distance <= 0) {
+      this.pinchActive = false;
+      return;
+    }
+
+    event.preventDefault();
+    this.pinchActive = true;
+    this.pinchStartDistance = distance;
+    this.pinchStartScale = target.group.scale.x;
+  };
+
+  private handlePinchMove = (event: TouchEvent) => {
+    if (this.pinchActive && event.touches.length >= 2) {
+      const target = this.resolvePinchTarget();
+
+      if (!target || this.pinchStartDistance <= 0) {
+        return;
+      }
+
+      const distance = this.getTouchDistance(event.touches);
+
+      if (distance <= 0) {
+        return;
+      }
+
+      event.preventDefault();
+      const scaleFactor = distance / this.pinchStartDistance;
+      const nextScale = MathUtils.clamp(
+        this.pinchStartScale * scaleFactor,
+        target.minScale,
+        target.maxScale
+      );
+      target.group.scale.setScalar(nextScale);
+      return;
+    }
+
+    if (!this.rotateActive || event.touches.length !== 1) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    const deltaX = touch.clientX - this.rotateStartX;
+
+    if (Math.abs(deltaX) < 0.2) {
+      return;
+    }
+
+    event.preventDefault();
+    this.rotateStartX = touch.clientX;
+    this.applyRotationFromDrag(deltaX);
+  };
+
+  private handlePinchEnd = (event: TouchEvent) => {
+    if (event.touches.length >= 2) {
+      const distance = this.getTouchDistance(event.touches);
+
+      if (distance > 0) {
+        this.pinchStartDistance = distance;
+        const target = this.resolvePinchTarget();
+        if (target) {
+          this.pinchStartScale = target.group.scale.x;
+        }
+        return;
+      }
+    }
+
+    if (event.touches.length === 1 && this.canRotatePlacedModel()) {
+      this.pinchActive = false;
+      this.rotateActive = true;
+      this.rotateStartX = event.touches[0].clientX;
+      return;
+    }
+
+    this.rotateActive = false;
+    this.pinchActive = false;
+    this.pinchStartDistance = 0;
+  };
+
   private handleSessionEnd = () => {
     this.xrSession?.removeEventListener("end", this.handleSessionEnd);
     this.xrSession = null;
@@ -742,12 +936,17 @@ export class ThreeStageController {
     this.anchor = null;
     this.hasPlacedDish = false;
     this.hasStablePose = false;
+    this.pinchActive = false;
+    this.rotateActive = false;
+    this.pinchStartDistance = 0;
+    this.userYawOffset = 0;
     this.reticle.visible = false;
     if (this.previewRig.parent !== this.scene) {
       this.scene.add(this.previewRig);
     }
     this.applyPreviewRigModeVisibility(false);
     this.previewRig.visible = true;
+    this.previewDishMount.scale.setScalar(1);
     this.xrPlacementGroup.visible = false;
     this.xrPlacementGroup.clear();
     this.activePlacedObject = null;
