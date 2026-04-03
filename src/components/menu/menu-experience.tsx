@@ -1,8 +1,14 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useRef, useState } from "react";
-import { formatPrice, getAdjacentDishes, resolveDishAssets } from "@/lib/ar/assets";
+import { useEffect, useRef, useState } from "react";
+import {
+  formatPrice,
+  getAdjacentDishes,
+  resolveDishAssets,
+  warmDishForLaunch,
+  warmMenuAssetsInBackground
+} from "@/lib/ar/assets";
 import { resolveRenderEngine } from "@/lib/ar/engines/resolve-engine";
 import { openQuickLook } from "@/lib/ar/quick-look";
 import type { MenuCategory, RestaurantMenu } from "@/lib/menu/types";
@@ -137,6 +143,25 @@ export function MenuExperience({ menu }: MenuExperienceProps) {
       : canOpenArView
         ? "AR On Mobile"
         : "3D Preview Active";
+
+  useEffect(() => {
+    if (!capabilities.ready) {
+      return;
+    }
+
+    warmMenuAssetsInBackground(menu.dishes, capabilities);
+  }, [capabilities, menu.dishes]);
+
+  useEffect(() => {
+    if (!capabilities.ready) {
+      return;
+    }
+
+    warmDishForLaunch(currentDish, capabilities);
+    preloadDishes.forEach((dish) => {
+      warmDishForLaunch(dish, capabilities);
+    });
+  }, [capabilities, currentDish, preloadDishes]);
 
   return (
     <main className="experience-shell">

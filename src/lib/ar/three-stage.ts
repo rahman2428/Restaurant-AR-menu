@@ -32,6 +32,9 @@ import { createProceduralDish } from "./procedural-dish";
 import type { PerformanceTier } from "./capabilities";
 import type { MenuDish } from "@/lib/menu/types";
 
+const sharedPrototypeResolved = new Map<string, Object3D>();
+const sharedPrototypePending = new Map<string, Promise<Object3D>>();
+
 type AnchorHandle = {
   anchorSpace?: XRSpace;
   delete?: () => void;
@@ -176,9 +179,17 @@ export class ThreeStageController {
     if (dish.assets.glb) {
       gltfAssetCache.preload(dish.assets.glb);
     }
+
+    this.preloadPrototype(dish);
   }
 
   async setDish(dish: MenuDish) {
+    if (this.currentDish?.id === dish.id && this.activePrototype) {
+      this.callbacks.onError?.(null);
+      this.applyAccent(dish);
+      return;
+    }
+
     this.currentDish = dish;
     this.callbacks.onError?.(null);
     this.applyAccent(dish);
@@ -186,7 +197,7 @@ export class ThreeStageController {
     const requestId = this.loadVersion + 1;
     this.loadVersion = requestId;
 
-    const prototype = await this.buildPrototype(dish);
+    const prototype = await this.getPrototypeForDish(dish);
 
     if (requestId !== this.loadVersion) {
       return;
@@ -206,6 +217,15 @@ export class ThreeStageController {
     if (!navigator.xr) {
       this.callbacks.onError?.("WebXR is unavailable on this device.");
       return false;
+    }
+
+    if (this.currentDish && !this.activePrototype) {
+      try {
+        this.activePrototype = await this.getPrototypeForDish(this.currentDish);
+      } catch {
+        this.callbacks.onError?.("Model is still preparing. Please try AR again.");
+        return false;
+      }
     }
 
     try {
@@ -414,6 +434,50 @@ export class ThreeStageController {
     wrapper.position.y = dish.visual.pedestalHeight;
 
     return wrapper;
+  }
+
+  private preloadPrototype(dish: MenuDish) {
+    if (sharedPrototypeResolved.has(dish.id) || sharedPrototypePending.has(dish.id)) {
+      return;
+    }
+
+    const request = this.buildPrototype(dish)
+      .then((prototype) => {
+        sharedPrototypeResolved.set(dish.id, prototype);
+        sharedPrototypePending.delete(dish.id);
+        return prototype;
+      })
+      .catch((error) => {
+        sharedPrototypePending.delete(dish.id);
+        throw error;
+      });
+
+    sharedPrototypePending.set(dish.id, request);
+  }
+
+  private async getPrototypeForDish(dish: MenuDish) {
+    if (sharedPrototypeResolved.has(dish.id)) {
+      return sharedPrototypeResolved.get(dish.id)!;
+    }
+
+    if (sharedPrototypePending.has(dish.id)) {
+      return sharedPrototypePending.get(dish.id)!;
+    }
+
+    const request = this.buildPrototype(dish)
+      .then((prototype) => {
+        sharedPrototypeResolved.set(dish.id, prototype);
+        sharedPrototypePending.delete(dish.id);
+        return prototype;
+      })
+      .catch((error) => {
+        sharedPrototypePending.delete(dish.id);
+        throw error;
+      });
+
+    sharedPrototypePending.set(dish.id, request);
+
+    return request;
   }
 
   private async loadDishSource(dish: MenuDish) {
